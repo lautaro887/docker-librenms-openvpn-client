@@ -1,0 +1,255 @@
+#archivo docker compose para levantar librenms centralizado para clientes.
+
+#modo de ejecutar 
+# sudo docker-compose -p nombrecliente up -d
+#esto genera un proyecto para cada uno por separado , por lo cual deberemos tener una carpeta para cada implementacion
+
+
+
+
+#archivo .env 
+
+#TZ=America/Argentina/Mendoza #servidor horario , horas php
+#PUID=1000
+#PGID=1000
+
+#credenciales mysql (modificar para todos igual)
+#MYSQL_DATABASE=librenms 
+#MYSQL_USER=librenms
+#MYSQL_PASSWORD=asupersecretpassword
+
+#declaracion de redes usadas entre contenedores , a agregar ruta estatica en otro extremo de vpn
+#RED_SERVICIO=172.26.0.0/24 # apuntar a esta red desde router servidor , por medio de ruta estatica
+#IP_GW_OVPN=172.26.0.254  #gateway usado para la red virtual , solo es para comunicacion entre contenedores y que estos apunten a las redes del otro extremo vpn
+#PUERTO=8000 #puerto usado para conectarse a la gestion de librenms
+#todos estos parametros se deben cambiar entre cada nueva implementacion , debido a que se pueden superponer  y no va a arrancar.
+
+
+---
+#declaracion de redes de docker
+networks:
+  #red externa - conexion a red externa
+  bridge_network:
+    driver: bridge
+  #red interna - conexion entre contenedores   
+  virtual_network:
+    #internal: true
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${RED_SERVICIO}
+
+#declaracion de contenedores
+services:
+#Cliente Openvpn - Archivos openvpn alojados en carpeta vpn 
+  openvpn-client:
+    image: dperson/openvpn-client:latest
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    volumes:
+      - ./vpn:/vpn
+    restart: always
+#tiene salida a la red externa y a la red interna que interconecta contenedores
+    networks:
+      bridge_network:
+      virtual_network:
+        ipv4_address: ${IP_GW_OVPN} #ip declarada en archivo .env - ip usada de gw para otros contenedores 
+        
+
+#base de datos de librenms
+  db:
+    image: mariadb:10.5
+    networks:
+      - virtual_network
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    volumes:
+      - "./db:/var/lib/mysql"
+    environment:
+      - "TZ=${TZ}"
+      - "MYSQL_ALLOW_EMPTY_PASSWORD=yes"
+      - "MYSQL_DATABASE=${MYSQL_DATABASE}"
+      - "MYSQL_USER=${MYSQL_USER}"
+      - "MYSQL_PASSWORD=${MYSQL_PASSWORD}"
+    restart: always
+
+  redis:
+    image: redis:5.0-alpine
+    networks:
+      - virtual_network
+    environment:
+      - "TZ=${TZ}"
+    restart: always
+#servidor mail . sin usar
+#  msmtpd:
+#    image: crazymax/msmtpd:latest
+#    container_name: librenms_msmtpd
+#    env_file:
+#      - "./msmtpd.env"
+#    restart: always
+
+#servicio web de librenms
+  librenms:
+    image: librenms/librenms:latest
+    hostname: librenms
+    cap_add:
+      - NET_ADMIN
+   #   - NET_RAW
+    networks:
+      - bridge_network
+      - virtual_network   
+    expose:
+      - ${PUERTO} #expone puerto declarado en archivo .env en red virtual_network
+    ports:
+      - target: 8000
+        published: ${PUERTO} #expone puerto declarado en archivo .env en red bridge_network , este sera el que se debe ingresar desde el exterior
+        protocol: tcp
+    depends_on:
+      - db
+      - redis
+     # - msmtpd
+    volumes:
+      - "./librenms:/data"
+    env_file:
+      - "./librenms.env"
+    environment:
+      - "TZ=${TZ}"
+      - "PUID=${PUID}"
+      - "PGID=${PGID}"
+      - "DB_HOST=db"
+      - "DB_NAME=${MYSQL_DATABASE}"
+      - "DB_USER=${MYSQL_USER}"
+      - "DB_PASSWORD=${MYSQL_PASSWORD}"
+      - "DB_TIMEOUT=60"
+    restart: always
+    #push de rutas estaticas entre contenedores , para tener gw el contenedor cliente openvpn , apuntando a la ip declarada en archivo .env
+    command: >-
+      sh -c "ip route add 192.168.0.0/16 via ${IP_GW_OVPN} && ip route add 10.0.0.0/20 via ${IP_GW_OVPN}  && ip route add 172.16.0.0/20 via ${IP_GW_OVPN} &&
+      tail -f /dev/null"
+
+
+  dispatcher:
+    image: librenms/librenms:latest
+    hostname: librenms-dispatcher
+    #cap_add:
+    #  - NET_ADMIN
+    #  - NET_RAW
+    depends_on:
+      - librenms
+      - redis
+    volumes:
+      - "./librenms:/data"
+    env_file:
+      - "./librenms.env"
+    environment:
+      - "TZ=${TZ}"
+      - "PUID=${PUID}"
+      - "PGID=${PGID}"
+      - "DB_HOST=db"
+      - "DB_NAME=${MYSQL_DATABASE}"
+      - "DB_USER=${MYSQL_USER}"
+      - "DB_PASSWORD=${MYSQL_PASSWORD}"
+      - "DB_TIMEOUT=60"
+      - "DISPATCHER_NODE_ID=dispatcher1"
+      - "SIDECAR_DISPATCHER=1"
+    restart: always
+
+#syslog de librenms
+  syslogng:
+    image: librenms/librenms:latest
+    hostname: librenms-syslogng
+    networks:
+      - virtual_network
+    cap_add:
+      - NET_ADMIN
+    #  - NET_RAW
+    depends_on:
+      - librenms
+      - redis
+    #ports:
+    expose:
+      - "514"
+      #- target: 514
+      #  published: 514
+      #  protocol: tcp
+      #- target: 514
+      #  published: 514
+      #  protocol: udp
+    volumes:
+      - "./librenms:/data"
+    env_file:
+      - "./librenms.env"
+    environment:
+      - "TZ=${TZ}"
+      - "PUID=${PUID}"
+      - "PGID=${PGID}"
+      - "DB_HOST=db"
+      - "DB_NAME=${MYSQL_DATABASE}"
+      - "DB_USER=${MYSQL_USER}"
+      - "DB_PASSWORD=${MYSQL_PASSWORD}"
+      - "DB_TIMEOUT=60"
+      - "SIDECAR_SYSLOGNG=1"
+    restart: always
+    #push de rutas estaticas entre contenedores , para tener gw el contenedor cliente openvpn , apuntando a la ip declarada en archivo .env
+    command: >-
+      sh -c "ip route add 192.168.0.0/16 via ${IP_GW_OVPN} && ip route add 10.0.0.0/20 via ${IP_GW_OVPN}  && ip route add 172.16.0.0/20 via ${IP_GW_OVPN} &&
+      tail -f /dev/null"
+
+#servicio de snmp consulta a clientes
+  snmptrapd:
+    image: librenms/librenms:latest
+    hostname: librenms-snmptrapd
+    networks:
+      - virtual_network
+    cap_add:
+      - NET_ADMIN
+    #  - NET_RAW
+    depends_on:
+      - librenms
+      - redis
+    #ports:
+    expose:
+      - "162"
+      #- target: 162
+      #  published: 162
+      #  protocol: tcp
+      #- target: 162
+      #  published: 162
+      #  protocol: udp
+    volumes:
+      - "./librenms:/data"
+    env_file:
+      - "./librenms.env"
+    environment:
+      - "TZ=${TZ}"
+      - "PUID=${PUID}"
+      - "PGID=${PGID}"
+      - "DB_HOST=db"
+      - "DB_NAME=${MYSQL_DATABASE}"
+      - "DB_USER=${MYSQL_USER}"
+      - "DB_PASSWORD=${MYSQL_PASSWORD}"
+      - "DB_TIMEOUT=60"
+      - "SIDECAR_SNMPTRAPD=1"
+    restart: always
+    #push de rutas estaticas entre contenedores , para tener gw el contenedor cliente openvpn , apuntando a la ip declarada en archivo .env
+    command: >-
+      sh -c "ip route add 192.168.0.0/16 via ${IP_GW_OVPN} && ip route add 10.0.0.0/20 via ${IP_GW_OVPN}  && ip route add 172.16.0.0/20 via ${IP_GW_OVPN} &&
+      tail -f /dev/null"
+
+#servicio oxidized backup
+  #oxidized:
+  #  restart: always
+  #  image: oxidized/oxidized:latest
+  #   ports:
+  #    - 8888:8888/tcp
+  #  environment:
+  #    CONFIG_RELOAD_INTERVAL: 600
+  #  volumes:
+  #     - ./:/home/oxidized/.config/oxidized/
