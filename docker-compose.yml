@@ -97,7 +97,8 @@ services:
 
 #servicio web de librenms
   librenms:
-    image: librenms/librenms:latest
+   # image: librenms/librenms:22.2.1
+    image: librenms/librenms:22.2.1
     hostname: librenms
     cap_add:
       - NET_ADMIN
@@ -136,7 +137,7 @@ services:
 
 
   dispatcher:
-    image: librenms/librenms:latest
+    image: librenms/librenms:22.2.1
     hostname: librenms-dispatcher
     #cap_add:
     #  - NET_ADMIN
@@ -163,7 +164,7 @@ services:
 
 #syslog de librenms
   syslogng:
-    image: librenms/librenms:latest
+    image: librenms/librenms:22.2.1
     hostname: librenms-syslogng
     networks:
       - virtual_network
@@ -204,7 +205,7 @@ services:
 
 #servicio de snmp consulta a clientes
   snmptrapd:
-    image: librenms/librenms:latest
+    image: librenms/librenms:22.2.1
     hostname: librenms-snmptrapd
     networks:
       - virtual_network
